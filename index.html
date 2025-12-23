@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>神秘礼物</title>
+  <style>
+    :root{
+      --emoji: '🖤✨';
+      --overlay: linear-gradient(135deg, rgba(255,255,255,.35), rgba(255,255,255,.15));
+      --shadow: 0 10px 30px rgba(0,0,0,.18);
+      --fg:#111; --muted:#565; --primary:#6b8afd;
+
+      /* 统一尺寸（更小，适配竖屏） */
+      --bubble-w: clamp(200px, 70vw, 300px);
+      --bubble-min-h: clamp(72px, 16vw, 108px);
+      --header-h: 44px;
+      --radius: 16px;
+    }
+
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;
+      background-image: linear-gradient(135deg, #f8fbff 0%, #fff 40%, #f6f7ff 100%);
+      background-size: cover;
+      background-position: center center;
+      background-attachment: fixed;
+      overflow:hidden;
+    }
+
+    /* 顶部 HUD（进度/速率/暂停） */
+    .hud{position:fixed; left:50%; top:12px; transform:translateX(-50%); z-index:3000; display:flex; gap:8px; align-items:center}
+    .chip{background:rgba(255,255,255,.9); backdrop-filter:saturate(140%) blur(6px); border:1px solid rgba(0,0,0,.06); color:#111; padding:6px 10px; border-radius:999px; font-size:12px; box-shadow: var(--shadow)}
+    .btn{appearance:none; border:none; border-radius:999px; padding:6px 12px; font-size:12px; font-weight:600; background:#2d3a6a; color:#fff; box-shadow:var(--shadow)}
+
+    /* 居中启动弹窗 */
+    .center-card{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:2000;}
+    .card{width:min(92vw,560px); background:rgba(255,255,255,.92); backdrop-filter:saturate(140%) blur(8px); border-radius:18px; box-shadow:var(--shadow); padding:20px; text-align:center}
+
+    /* 统一尺寸小弹窗（不会消失） */
+    .bubble{
+      position:fixed; display:flex; flex-direction:column;
+      width:var(--bubble-w); min-height:var(--bubble-min-h);
+      border-radius:var(--radius); box-shadow:var(--shadow); color:#111;
+      overflow:hidden; pointer-events:none;
+
+      /* 关键：GPU 加速 + 更轻动画 */
+      transform: translate3d(-50%, -50%, 0) scale(.9);
+      will-change: transform, opacity;
+      backface-visibility: hidden;
+      contain: layout style;
+
+      /* 更柔和的弹出曲线与时长 */
+      --pop-dur: 460ms;
+      --pop-ease: cubic-bezier(.22,1,.36,1);
+      animation: pop-spring var(--pop-dur) var(--pop-ease) both;
+    }
+    .bubble .header{ height:var(--header-h); display:flex; align-items:center; gap:8px; padding:0 12px; background:rgba(255,255,255,.85); backdrop-filter:saturate(140%) blur(6px); border-bottom:1px solid rgba(0,0,0,.06) }
+    .bubble .icon{ display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; font-size:18px; line-height:1; }
+    .bubble .title{ font-size:14px; font-weight:700; color:#2a2a2a }
+    .bubble .body{ flex:1; display:flex; align-items:center; justify-content:center; padding:12px 14px; text-align:center; }
+    .bubble .txt{ font-size: clamp(14px, 3.2vw, 18px); font-weight:700; line-height:1.35; text-shadow: 0 1px 0 rgba(255,255,255,.6); word-break: break-word; }
+
+    @keyframes pop-spring{
+      0%   { opacity:0; transform:translate3d(-50%,-50%,0) scale(.90); }
+      60%  { opacity:1; transform:translate3d(-50%,-50%,0) scale(1.04); }
+      85%  { transform:translate3d(-50%,-50%,0) scale(.985); }
+      100% { transform:translate3d(-50%,-50%,0) scale(1); }
+    }
+
+    /* 关怀低动效用户 */
+    @media (prefers-reduced-motion: reduce){
+      .bubble{ animation:none !important; transform:translate(-50%,-50%) }
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶部 HUD（计数/速率已隐藏，仅保留“暂停/继续”） -->
+  <div class="hud" id="hud" style="display:none;">
+    <div class="chip" id="progress" style="display:none;">0 / 100</div>
+    <div class="chip" id="rate" style="display:none;">速率：≈6/秒</div>
+    <button class="btn" id="pause">⏸ 暂停</button>
+  </div>
+
+  <!-- 居中启动弹窗 -->
+  <div class="center-card" id="start">
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="popupTitle">
+      <div class="dlg-header" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span class="icon" aria-hidden="true" style="font-size:22px;">🎁</span>
+        <h1 id="popupTitle" style="margin:0;font-size:20px;">神秘礼物</h1>
+      </div>
+      <p style="margin:4px 0 0;color:#333;font-size:16px;">
+        你有一份神秘礼物待签收，确定要打开吗？
+      </p>
+      <button class="btn" id="startBtn" style="margin-top:16px;">确定</button>
+    </div>
+  </div>
+
+  <script>
+    // ===== 参数 =====
+    let TICK_MS  = 200;   // 生成间隔（毫秒）
+    let PER_TICK = 1;     // 每次生成多少个弹窗
+    const KEEP_ALL = true; // 全部保留（不会移除）
+
+    // ===== BGM（可替换成你的直链/路径）=====
+    const AUDIO_SRC = "./lll.mp3";
+    const AUDIO_START_AT = 0;
+    let audioEl = null;
+
+    // ===== 祝福文案（第 1 条“生日快乐”） =====
+    const blessings = [
+      "生日快乐","愿你所求皆如愿，所行化坦途","新的一岁，眼里有光，心中有爱","愿你健康常在，笑容常开","前程似锦，万事胜意",
+      "祝你学业进步，步步高升","愿你被世界温柔以待","愿你心想事成，一切顺利","岁岁常欢愉，年年皆胜意","愿你所遇皆良善，所见皆美好",
+      "好运伴你左右，平安喜乐常在","事业蒸蒸日上，生活红红火火","愿你被光照亮，也成为别人的光","前路有风景，身后有支持","鲜花与掌声都向你招手",
+      "所爱如山海，岁月不言败","愿你不负热爱，不负自己","一切美好不期而遇","阳光正好，万物可期","愿你勇敢无畏，温柔坚定",
+      "眉眼带笑，心事皆晴","愿你每天都能睡个好觉","身心自由，灵魂有光","愿你与幸运不期而遇","生活可爱，工作顺心",
+      "愿你拥抱热爱，拥抱世界","进步看得见，幸福摸得着","愿你被时间温柔以待","所愿皆得，所得皆欢","愿你与快乐常在",
+      "不惧将来，不念过往","愿你永远保持热爱与好奇","星河灿烂，前路明朗","愿你好运爆棚，心情爆表","一路生花，满载而归",
+      "愿你与理想不期而遇","心有丘壑，眉目成书","愿你的努力都被看见","心安即是归处，处处皆风景","愿你与温暖撞个满怀",
+      "把平凡日子过成诗","愿你逢考必过，逢战必赢","心态年轻，快乐翻倍","愿你被世界温柔以待（再次应验）","顺风顺水，也能逆风飞翔",
+      "愿你所念皆如愿，所愿皆成真","桃花连连，贵人常伴","愿你财源滚滚，余额常青","身强体健，百毒不侵","愿你不再焦虑，睡醒就有答案",
+      "情绪稳定，事事顺利","愿你被爱包围，也懂得自爱","脚下有路，心中有光","愿你一路披荆斩棘，所向披靡","读书有收获，工作有回报",
+      "愿你常常被小事感动","和自己和解，和世界和好","愿你迎难而上，所遇皆甜","不困于心，不乱于情","愿你与家人平安喜乐",
+      "学会热爱，学会松弛","愿你梦想有翼，现实有依","把日子过甜，把心事放轻","愿你浪漫不灭，理性常在","心怀感恩，所遇皆温柔",
+      "愿你多赚点钱，也多一点闲","和解过去，拥抱明天","愿你高分过线，高薪上岸","所遇皆拐点，拐向更好","愿你健康饮食，快乐运动",
+      "远离内耗，靠近热爱","愿你被幸运盯上，被烦恼放过","常喜常乐，日日自得","愿你被同伴理解，被长辈称赞","工作不加班，睡觉不失眠",
+      "愿你在低谷也不放弃","笑容明媚，心境澄澈","愿你与值得的人并肩","越努力越幸运","愿你四季平安，五福临门",
+      "赴一场热爱，归一身轻松","愿你有趣有盼，不将就","学有所成，行有所止","愿你善良有锋芒","风雨之后见彩虹",
+      "愿你所等皆不负所盼","脚踏实地，仰望星空","愿你手有余香，眼有星光","不为难自己，不讨好他人","愿你与焦虑说再见",
+      "热爱可抵岁月漫长","愿你所做皆所爱","见过山海，仍觉人间值得","愿你春有百花，冬有暖阳","做喜欢的事，和喜欢的人",
+      "愿你被微风轻抚，被好运拥抱","清醒自律，也温柔松弛","愿你开口遇贵人，出门逢喜事","心底从容，步履轻盈","愿你落落大方，闪闪发光",
+      "坚持与幸运撞个满怀","愿你此生尽兴，赤诚善良","不畏将来，不负过往","愿你被热爱治愈，被生活偏爱"
+    ];
+    while (blessings.length < 100) blessings.push(`愿你喜乐常伴（第${blessings.length+1}条）`);
+
+    // ===== 标题图标 =====
+    const ICON_SETS = [
+      [0x1F496],        // 💖
+      [0x1F497],        // 💗
+      [0x1F498],        // 💘
+      [0x1F49D],        // 💝
+      [0x1F496, 0x2728],// 💖✨
+      [0x1F496, 0x1F495]// 💖💕
+    ];
+    function pickIcon(){
+      const set = ICON_SETS[Math.floor(Math.random()*ICON_SETS.length)];
+      return String.fromCodePoint(...set);
+    }
+
+    // ===== HUD & 启动 =====
+    const hud = document.getElementById('hud');
+    const progressEl = document.getElementById('progress');
+    const rateEl = document.getElementById('rate');
+    const pauseBtn = document.getElementById('pause');
+    const start = document.getElementById('start');
+    const startBtn = document.getElementById('startBtn');
+
+    let idx = 0, z = 1000, playing = true, spawned = 0, finished = false;
+
+    startBtn.addEventListener('click', ()=>{
+      start.style.display = 'none';
+      hud.style.display = 'flex';
+      idx = 0; spawned = 0; z = 1000; playing = true; finished = false;
+      updateHud();
+
+      // BGM（失败也不阻塞）
+      if (AUDIO_SRC){
+        try{
+          if (!audioEl){
+            audioEl = new Audio(AUDIO_SRC);
+            audioEl.loop = true; audioEl.preload = 'auto';
+          }
+          const seek = ()=>{
+            try{
+              if (audioEl.readyState > 0){
+                audioEl.currentTime = AUDIO_START_AT || 0;
+                audioEl.play().catch(()=>{});
+                audioEl.removeEventListener('loadedmetadata', seek);
+                audioEl.removeEventListener('canplay', seek);
+              }
+            }catch(e){}
+          };
+          audioEl.addEventListener('loadedmetadata', seek);
+          audioEl.addEventListener('canplay', seek);
+          audioEl.play().then(()=>{
+            if ((AUDIO_START_AT||0) && audioEl.currentTime < (AUDIO_START_AT-0.5)){
+              audioEl.currentTime = AUDIO_START_AT;
+            }
+          }).catch(()=>{});
+        }catch(e){}
+      }
+
+      burst();
+      startTimer();
+    });
+
+    pauseBtn.addEventListener('click', ()=>{
+      if (playing){ stopTimer(); pauseBtn.textContent = '▶ 继续'; }
+      else        { startTimer(); pauseBtn.textContent = '⏸ 暂停'; }
+      playing = !playing;
+    });
+
+    // ===== rAF 调度：更顺滑的生成节奏 =====
+    let rafIdGen = 0, acc = 0;
+    function startTimer(){
+      stopTimer();
+      let last = performance.now();
+      function tick(now){
+        rafIdGen = requestAnimationFrame(tick);
+        const dt = now - last; last = now;
+        acc += dt;
+
+        while (acc >= TICK_MS){
+          acc -= TICK_MS;
+          burst();
+          if (finished){ stopTimer(); break; }
+        }
+      }
+      rafIdGen = requestAnimationFrame(tick);
+    }
+    function stopTimer(){
+      if (rafIdGen){ cancelAnimationFrame(rafIdGen); rafIdGen = 0; }
+      acc = 0;
+    }
+
+    function burst(){
+      if (finished) return;
+      if (idx >= blessings.length){ finish(); return; }
+      const remaining = blessings.length - idx;
+      const n = Math.min(PER_TICK, remaining);
+      for (let k=0; k<n; k++){
+        const text = blessings[idx];
+        spawnBubble(text, spawned);
+        idx++; spawned++;
+      }
+      updateHud();
+      if (idx >= blessings.length){ finish(); }
+    }
+
+    function finish(){
+      if (finished) return; finished = true;
+      stopTimer();
+      pauseBtn.disabled = true; rateEl.textContent = '已完成';
+      showFinalCard();
+      launchFireworks(60); // 播放 60 秒烟花
+    }
+
+    function updateHud(){
+      if (progressEl) progressEl.textContent = `${Math.min(idx, blessings.length)} / ${blessings.length}`;
+      const perSec = Math.round(1000 / TICK_MS * PER_TICK);
+      rateEl.textContent = `速率：≈${perSec}/秒`;
+    }
+
+    // ===== 工具：随机浅色、随机位置 =====
+    function pastel(){
+      const h = Math.floor(Math.random()*360);
+      const s = 55 + Math.random()*18;
+      const l = 86 + Math.random()*10;
+      return `hsl(${h} ${s}% ${l}%)`;
+    }
+
+    function spawnBubble(text, i){
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble';
+      wrap.style.zIndex = (z + i).toString();
+
+      const c1 = pastel(); const c2 = pastel();
+      wrap.style.background = Math.random() < 0.55 ? c1 : `linear-gradient(135deg, ${c1} 0%, ${c2} 100%)`;
+
+      // 头部
+      const header = document.createElement('div'); header.className = 'header';
+      const icon = document.createElement('div'); icon.className = 'icon'; icon.textContent = pickIcon();
+      const title = document.createElement('div'); title.className = 'title'; title.textContent = '提示';
+      header.appendChild(icon); header.appendChild(title);
+
+      // 正文
+      const body = document.createElement('div'); body.className = 'body';
+      const t = document.createElement('div'); t.className = 'txt'; t.textContent = text;
+      body.appendChild(t);
+
+      wrap.appendChild(header); wrap.appendChild(body);
+      document.body.appendChild(wrap);
+
+      // 计算不越界位置（以中心定位）
+      const pad = 8;
+      const w = wrap.offsetWidth; const h = wrap.offsetHeight;
+      const ww = window.innerWidth; const wh = window.innerHeight;
+      const minX = pad + w/2, maxX = ww - pad - w/2;
+      const minY = pad + h/2 + 40, maxY = wh - pad - h/2; // 顶部给 HUD 留空间
+      const x = Math.random()*(maxX - minX) + minX;
+      const y = Math.random()*(maxY - minY) + minY;
+      wrap.style.left = x + 'px';
+      wrap.style.top  = y + 'px';
+    }
+
+    // —— 结尾大卡片（2 秒一条，渐隐渐现）——
+    function showFinalCard(){
+      const finalMsgs = [
+        '生日快乐 龚艺文',
+        '记得好好吃饭 记得天天开心',
+        '好好爱自己',
+        '所有烦恼都消失',
+        '要感到幸福',
+        '天冷了 多穿衣服',
+        '真心希望你快乐',
+        '真的希望你快乐',
+        '期待见到你的笑容',
+        '龚艺文天鹅生日快快乐乐<br/>——友人的祝福'
+      ];
+
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble';
+      wrap.style.zIndex = '99999';
+      wrap.style.width = 'min(520px, 86vw)';
+      wrap.style.minHeight = 'min(260px, 48vh)';
+      wrap.style.left = (window.innerWidth/2) + 'px';
+      wrap.style.top  = (window.innerHeight/2) + 'px';
+      wrap.style.background = 'linear-gradient(135deg, hsl(340 90% 92%), hsl(330 95% 97%))';
+
+      // 头部
+      const header = document.createElement('div'); header.className = 'header';
+      const icon = document.createElement('div'); icon.className = 'icon'; icon.textContent = '💖';
+      const title = document.createElement('div'); title.className = 'title'; title.textContent = '生日&圣诞&新年祝福';
+      header.appendChild(icon); header.appendChild(title);
+
+      // 正文
+      const body = document.createElement('div'); body.className = 'body';
+      const t = document.createElement('div'); t.className = 'txt';
+      t.style.fontSize = 'clamp(18px, 5.2vw, 26px)';
+      t.style.transition = 'opacity .5s ease';
+      t.style.opacity = '0';
+      body.appendChild(t);
+
+      wrap.appendChild(header); wrap.appendChild(body);
+      document.body.appendChild(wrap);
+
+      // 2 秒一条，渐隐渐现
+      let i = 0;
+      const SHOW_MS = 2000;
+      const FADE_MS = 500;
+
+      function showNext(){
+        if (i >= finalMsgs.length) return; // 最后一条后停住
+        t.style.opacity = '0';             // 渐出
+        setTimeout(()=>{
+          t.innerHTML = finalMsgs[i++];    // 换文案
+          t.style.opacity = '1';           // 渐入
+          setTimeout(()=>{
+            if (i < finalMsgs.length) setTimeout(showNext, 0);
+          }, SHOW_MS - FADE_MS);
+        }, FADE_MS);
+      }
+
+      // 立即显示第一条
+      t.innerHTML = finalMsgs[i++];
+      t.style.opacity = '1';
+      setTimeout(showNext, SHOW_MS);
+    }
+
+    // --- 庆祝烟花（小而精，自适应屏幕，播完即移除） ---
+    function launchFireworks(durationSec = 10){
+      // 动态创建画布（用完就删）
+      const c = document.createElement('canvas');
+      c.style.cssText = 'position:fixed;inset:0;z-index:12000;pointer-events:none';
+      document.body.appendChild(c);
+
+      const ctx = c.getContext('2d');
+      let W, H, DPR = Math.max(1, window.devicePixelRatio || 1);
+
+      // 基于屏幕较短边计算缩放因子，手机会稍小
+      let baseScale = 1;
+      function resize(){
+        W = c.clientWidth = window.innerWidth;
+        H = c.clientHeight = window.innerHeight;
+        c.width  = W * DPR; c.height = H * DPR;
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+        // 以 430px 作为基准短边
+        const shortSide = Math.min(W, H);
+        baseScale = Math.min(1, Math.max(0.6, shortSide / 430)); // 0.6 ~ 1
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      const gravity  = 0.05 * baseScale;
+      const friction = 0.988;
+      const particles = [];
+      let running = true, rafId = 0;
+
+      function burst(x, y, colors){
+        const n = Math.round((28 + Math.random()*10) * baseScale); // ~28-38 * scale
+        for(let i=0;i<n;i++){
+          const a  = Math.random()*Math.PI*2;
+          const sp = (1.6 + Math.random()*2.6) * baseScale;
+          particles.push({
+            x, y,
+            vx: Math.cos(a)*sp,
+            vy: Math.sin(a)*sp,
+            life: 1,
+            color: colors[Math.floor(Math.random()*colors.length)],
+            size: (0.8 + Math.random()*1.6) * baseScale
+          });
+        }
+      }
+
+      const palettes = [
+        ['#ff7aa2','#ffd1dc','#ffe6a7','#fff5c0'],
+        ['#7adfff','#a7ffeb','#ffffff','#c0d9ff'],
+        ['#ffd27a','#ff9a7a','#ffe07a','#ffffff']
+      ];
+
+      const EDGE = 0.10; // 留 10% 边距
+      let lastSpawn = 0;
+
+      function loop(t){
+        if (!running) return;
+        rafId = requestAnimationFrame(loop);
+
+        // 柔和拖影
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(0,0,W,H);
+
+        ctx.globalCompositeOperation = 'lighter';
+
+        // 触发频率略降，移动端更稳
+        if (!lastSpawn || t - lastSpawn > (440 + Math.random()*160)){
+          lastSpawn = t;
+          const px = (EDGE*W) + Math.random() * ((1-EDGE*2)*W);
+          const py = (EDGE*H) + Math.random() * ((1-EDGE*2)*H);
+          burst(px, py, palettes[Math.floor(Math.random()*palettes.length)]);
+        }
+
+        for (let i=particles.length-1;i>=0;i--){
+          const p = particles[i];
+          p.vx *= friction; p.vy = p.vy*friction + gravity;
+          p.x += p.vx; p.y += p.vy;
+          p.life -= (0.012 + Math.random()*0.009);
+
+          if (p.life <= 0 || p.y > H+24){ particles.splice(i,1); continue; }
+          ctx.globalAlpha = Math.max(0, p.life);
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      rafId = requestAnimationFrame(loop);
+
+      // 到时停止并彻底清理（不影响背景）
+      setTimeout(()=>{
+        running = false;
+        cancelAnimationFrame(rafId);
+        window.removeEventListener('resize', resize);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.clearRect(0,0,W,H);
+        c.remove();
+      }, durationSec * 1000);
+    }
+
+    // 兜底：任意点击也能启动一次
+    (function(){
+      const btn = document.getElementById('startBtn');
+      if(!btn) return;
+      let started = false;
+      function safeStart(){
+        if(started) return; started = true;
+        btn.click();
+      }
+      document.addEventListener('touchstart', safeStart, { once:true, passive:true });
+      document.addEventListener('click', safeStart, { once:true });
+    })();
+  </script>
+</body>
+</html>
